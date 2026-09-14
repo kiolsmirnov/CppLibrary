@@ -29,11 +29,11 @@ class SharedPtr {
     using MadeSharedCBAlloc = typename std::allocator_traits<Alloc>::template rebind_alloc<MadeSharedControlBlock>;
     using MadeSharedCBTraits = std::allocator_traits<MadeSharedCBAlloc>;
     MadeSharedCBAlloc alloc;
-    alignas(U) char char_ptr[sizeof(U)];
+    alignas(U) char object_mem[sizeof(U)];
  
     void SharedDestroy() override {
       Alloc default_alloc = alloc;
-      std::allocator_traits<Alloc>::destroy(default_alloc, reinterpret_cast<U*>(char_ptr));
+      std::allocator_traits<Alloc>::destroy(default_alloc, reinterpret_cast<U*>(object_mem));
  
       if (this->weak_count == 0) {
         this->WeakDestroy();
@@ -99,19 +99,19 @@ class SharedPtr {
     return this->operator= <T>(std::forward<SharedPtr<T>>(other));
   }
  
-  // Base constructor
+  // Main constructor
   template <typename U = T, typename Deleter, typename Alloc>
   SharedPtr(U* ptr, Deleter deleter, Alloc alloc) : ptr_(static_cast<T*>(ptr)) {
-    typename DeleterControlBlock<U, Deleter, Alloc>::DeleterCBAlloc alloc1(alloc);
-    auto block = DeleterControlBlock<U, Deleter, Alloc>::DeleterCBTraits::allocate(alloc1, 1);
+    typename DeleterControlBlock<U, Deleter, Alloc>::DeleterCBAlloc block_alloc(alloc);
+    auto block = DeleterControlBlock<U, Deleter, Alloc>::DeleterCBTraits::allocate(block_alloc, 1);
     new (block) DeleterControlBlock<U, Deleter, Alloc>(1, 0, deleter, alloc, ptr);
  
     block_ = static_cast<IBaseControlBlock*>(block);
  
     if constexpr (std::is_base_of_v<EnableSharedFromThis<U>, U>) {
-      auto enable_shared_ptr = static_cast<EnableSharedFromThis<U>*>(ptr);
-      enable_shared_ptr->ptr_ = ptr;
-      enable_shared_ptr->block_ = block;
+      auto enable_ptr = static_cast<EnableSharedFromThis<U>*>(ptr);
+      enable_ptr->ptr_ = ptr;
+      enable_ptr->block_ = block;
     }
   }
  
@@ -147,14 +147,14 @@ class SharedPtr {
  
   template <typename U = T>
   SharedPtr& operator=(const SharedPtr<U>& other) {
-    auto other_ptr = static_cast<T*>(other.ptr_);
-    if (other_ptr == ptr_) {
+    auto new_ptr = static_cast<T*>(other.ptr_);
+    if (new_ptr == ptr_) {
       return *this;
     }
  
     DecreaseAndDestroy();
  
-    ptr_ = other_ptr;
+    ptr_ = new_ptr;
     block_ = const_cast<IBaseControlBlock*>(other.block_);
     ++block_->shared_count;
     return *this;
@@ -162,9 +162,9 @@ class SharedPtr {
  
   template <typename U = T>
   SharedPtr& operator=(SharedPtr<U>&& other) {
-    auto other_ptr = static_cast<T*>(other.ptr_);
-    if (other_ptr == ptr_) {
-      if (other_ptr != nullptr) {
+    auto new_ptr = static_cast<T*>(other.ptr_);
+    if (new_ptr == ptr_) {
+      if (new_ptr != nullptr) {
         --block_->shared_count;
       }
       other.ptr_ = nullptr;
@@ -174,7 +174,7 @@ class SharedPtr {
  
     DecreaseAndDestroy();
  
-    ptr_ = other_ptr;
+    ptr_ = new_ptr;
     block_ = const_cast<IBaseControlBlock*>(other.block_);
     other.ptr_ = nullptr;
     other.block_ = nullptr;
@@ -221,7 +221,7 @@ class SharedPtr {
   IBaseControlBlock* block_;
   T* ptr_;
  
-  // Make Shared constructor
+  // Constructor for makeShared
   SharedPtr(IBaseControlBlock* block, T* ptr) noexcept : block_(block), ptr_(ptr) {
   }
  
@@ -261,21 +261,21 @@ SharedPtr<T> allocateShared(Alloc alloc, Args&&... args) {
   using MadeSharedCBAlloc = typename MadeSharedCB::MadeSharedCBAlloc;
   using MadeSharedCBTraits = std::allocator_traits<MadeSharedCBAlloc>;
  
-  MadeSharedCBAlloc alloc2 = alloc;
-  MadeSharedCB* made_shared_cb_ptr = MadeSharedCBTraits::allocate(alloc2, 1);
-  new (made_shared_cb_ptr) MadeSharedCB(1, 0, alloc);
-  T* t_ptr = reinterpret_cast<T*>(made_shared_cb_ptr->char_ptr);
-  std::allocator_traits<Alloc>::construct(alloc, t_ptr, std::forward<Args>(args)...);
+  MadeSharedCBAlloc block_alloc = alloc;
+  MadeSharedCB* control_block = MadeSharedCBTraits::allocate(block_alloc, 1);
+  new (control_block) MadeSharedCB(1, 0, alloc);
+  T* object_ptr = reinterpret_cast<T*>(control_block->object_mem);
+  std::allocator_traits<Alloc>::construct(alloc, object_ptr, std::forward<Args>(args)...);
  
-  auto base_cb_ptr = static_cast<IBaseControlBlock*>(made_shared_cb_ptr);
+  auto base_block = static_cast<IBaseControlBlock*>(control_block);
  
   if constexpr (std::is_base_of_v<EnableSharedFromThis<T>, T>) {
-    auto enable_shared_ptr = static_cast<EnableSharedFromThis<T>*>(t_ptr);
-    enable_shared_ptr->ptr_ = t_ptr;
-    enable_shared_ptr->block_ = made_shared_cb_ptr;
+    auto enable_ptr = static_cast<EnableSharedFromThis<T>*>(object_ptr);
+    enable_ptr->ptr_ = object_ptr;
+    enable_ptr->block_ = control_block;
   }
  
-  return SharedPtr(base_cb_ptr, t_ptr);
+  return SharedPtr(base_block, object_ptr);
 }
  
 template <typename T, typename... Args>
@@ -329,14 +329,14 @@ class WeakPtr {
  
   template <typename U = T>
   WeakPtr& operator=(const WeakPtr<U>& other) {
-    auto other_ptr = static_cast<T*>(other.ptr_);
-    if (other_ptr == ptr_) {
+    auto new_ptr = static_cast<T*>(other.ptr_);
+    if (new_ptr == ptr_) {
       return *this;
     }
  
     DecreaseAndDestroy();
  
-    ptr_ = other_ptr;
+    ptr_ = new_ptr;
     block_ = reinterpret_cast<decltype(block_)>(other.block_);
     ++block_->weak_count;
     return *this;
@@ -344,8 +344,8 @@ class WeakPtr {
  
   template <typename U = T>
   WeakPtr& operator=(WeakPtr<U>&& other) {
-    auto other_ptr = static_cast<T*>(other.ptr_);
-    if (other_ptr == ptr_) {
+    auto new_ptr = static_cast<T*>(other.ptr_);
+    if (new_ptr == ptr_) {
       if (other.ptr_ != nullptr) {
         --block_->weak_count;
       }
@@ -356,7 +356,7 @@ class WeakPtr {
  
     DecreaseAndDestroy();
  
-    ptr_ = other_ptr;
+    ptr_ = new_ptr;
     block_ = reinterpret_cast<decltype(block_)>(other.block_);
     other.ptr_ = nullptr;
     other.block_ = nullptr;
