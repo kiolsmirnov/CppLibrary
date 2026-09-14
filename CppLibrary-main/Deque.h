@@ -15,15 +15,15 @@ public:
     Deque() = default;
 
     explicit Deque(const int size) : size_(size) {
-        int64_t jend = size / kSubVectorSize + (size % kSubVectorSize != 0);
+        int64_t blocks_count = size / kSubVectorSize + (size % kSubVectorSize != 0);
 
-        for (int j = 1; j <= jend; ++j) {
+        for (int j = 1; j <= blocks_count; ++j) {
             ptrs_.push_back(Allocate());
-            int64_t iend = j < jend
+            int64_t items_in_block = j < blocks_count
                 ? kSubVectorSize
                 : size % kSubVectorSize != 0 ? size % kSubVectorSize
                 : kSubVectorSize;
-            for (int i = 0; i < iend; ++i) {
+            for (int i = 0; i < items_in_block; ++i) {
                 try {
                     new (ptrs_.back() + i) T();
                 }
@@ -44,14 +44,14 @@ public:
             size % kSubVectorSize != 0 ? size % kSubVectorSize : kSubVectorSize;
     }
     Deque(const int size, const T& val) : size_(size) {
-        int64_t jend = size / kSubVectorSize + (size % kSubVectorSize != 0);
-        for (int j = 1; j <= jend; ++j) {
+        int64_t blocks_count = size / kSubVectorSize + (size % kSubVectorSize != 0);
+        for (int j = 1; j <= blocks_count; ++j) {
             ptrs_.push_back(Allocate());
-            int64_t iend = j < jend
+            int64_t items_in_block = j < blocks_count
                 ? kSubVectorSize
                 : size % kSubVectorSize != 0 ? size % kSubVectorSize
                 : kSubVectorSize;
-            for (int i = 0; i < iend; ++i) {
+            for (int i = 0; i < items_in_block; ++i) {
                 try {
                     new (ptrs_.back() + i) T(val);
                 }
@@ -131,13 +131,13 @@ public:
     }
 
     void push_back(const T& value) {  // NOLINT
-        bool created_new = false;
+        bool created_block = false;
 
         if (ptrs_.empty() ||
             (reverse_start_ == NumPtrs() - 1 && back_offset_ == 0) ||
             back_size_ == kSubVectorSize) {
             ptrs_.push_back(Allocate());
-            created_new = true;
+            created_block = true;
             back_size_ = 0;
         }
 
@@ -152,7 +152,7 @@ public:
             }
         }
         catch (...) {
-            if (created_new) {
+            if (created_block) {
                 Dealloc(ptrs_.back());
                 ptrs_.pop_back();
             }
@@ -200,9 +200,9 @@ public:
     }
 
     void push_front(const T& value) {  // NOLINT
-        bool created_new = false;
-        bool adjusted = false;
-        auto prev_rev_size = reversed_size_;
+        bool created_block = false;
+        bool pointers_adjusted = false;
+        auto old_reversed_size = reversed_size_;
 
         if (ptrs_.empty() ||
             (front_offset_ == 0 && front_ptr_ind_ - 1 == reverse_start_) ||
@@ -210,14 +210,14 @@ public:
                 front_ptr_ind_ <= reverse_start_)) {
             if (front_ptr_ind_ == 0) {
                 AdjustPointers();
-                adjusted = true;
+                pointers_adjusted = true;
                 front_ptr_ind_ = NumPtrs() / 2 + (NumPtrs() == 1);
                 reverse_start_ += NumPtrs() / 2 + (NumPtrs() == 1);
             }
 
             ptrs_[--front_ptr_ind_] = Allocate();
             reversed_size_ = 0;
-            created_new = true;
+            created_block = true;
         }
 
         try {
@@ -231,8 +231,8 @@ public:
             }
         }
         catch (...) {
-            if (created_new) {
-                if (adjusted) {
+            if (created_block) {
+                if (pointers_adjusted) {
                     reverse_start_ -= NumPtrs() / 2 + (NumPtrs() == 1);
                     ptrs_.erase(ptrs_.cbegin(), ptrs_.cbegin() + front_ptr_ind_ + 1);
                     front_ptr_ind_ = 0;
@@ -241,7 +241,7 @@ public:
                     front_ptr_ind_++;
                 }
                 reverse_start_ = front_ptr_ind_ - 1;
-                reversed_size_ = prev_rev_size;
+                reversed_size_ = old_reversed_size;
                 front_offset_ = 0;
             }
             // std::cout << "Error creating new varibale of T";
@@ -315,9 +315,9 @@ private:
         }
 
         iterator_template operator++(int) {
-            auto retval = *this;
+            auto result = *this;
             ++* this;
-            return retval;
+            return result;
         }
 
         iterator_template& operator--() {
@@ -326,9 +326,9 @@ private:
         }
 
         iterator_template operator--(int) {
-            auto retval = *this;
+            auto result = *this;
             --* this;
-            return retval;
+            return result;
         }
 
         difference_type operator-(const iterator_template& rhs) const {
@@ -337,9 +337,9 @@ private:
             }
 
             if (rhs.sub_arr_ind_ <= reverse_start_) {
-                int sub_arr_dist = sub_arr_ind_ - rhs.sub_arr_ind_ -
+                int block_distance = sub_arr_ind_ - rhs.sub_arr_ind_ -
                     (sub_arr_ind_ != rhs.sub_arr_ind_);
-                difference_type res = sub_arr_dist * kSubVectorSize;
+                difference_type res = block_distance * kSubVectorSize;
 
                 if (sub_arr_ind_ > reverse_start_) {
                     res += local_ind_ + rhs.local_ind_ + 1;
